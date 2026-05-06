@@ -4,3 +4,5 @@ yfinance
 PyGithub
 requests
 jquants-api-client==2.0.1
+beautifulsoup4
+trafilatura
