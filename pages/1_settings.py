@@ -1,5 +1,5 @@
 import streamlit as st
-import jquants-api-client
+import jquantsapi
 import json
 from github import Github
 from datetime import datetime
