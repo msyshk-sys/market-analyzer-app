@@ -2,12 +2,11 @@ import streamlit as st
 import yfinance as yf
 import requests
 import json
-import os
 import hashlib
 import re
+import time
 import email.utils
 import xml.etree.ElementTree as ET
-import time
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +18,11 @@ st.title("🌍 Global Market Dashboard")
 
 JST = timezone(timedelta(hours=+9), "JST")
 UTC = timezone.utc
+
+US_MORNING_HOUR = 7   # 米国3指数・先物/商品の早朝更新
+JP_CLOSE_HOUR = 17    # 日本株・先物/商品の17時更新
+MAX_ARTICLE_CHARS = 3500
+MAX_NEWS_PER_ASSET = 2
 
 INDEX_US = {
     "S&P 500": "^GSPC",
@@ -37,11 +41,36 @@ COMMODITIES_FUTURES = {
 }
 
 RAW_JSON_URL = "https://raw.githubusercontent.com/msyshk-sys/market-analyzer-app/main/industry_themes.json"
-MAX_ARTICLE_CHARS = 4000
 
 
-@st.cache_data(ttl=10800)
-def fetch_data(tickers_dict):
+def _slot_us(now_jst: datetime) -> str:
+    d = now_jst.date()
+    if now_jst.hour < US_MORNING_HOUR:
+        d = d - timedelta(days=1)
+    return f"US_{d.isoformat()}_0700"
+
+
+def _slot_jp(now_jst: datetime) -> str:
+    d = now_jst.date()
+    if now_jst.hour < JP_CLOSE_HOUR:
+        d = d - timedelta(days=1)
+    return f"JP_{d.isoformat()}_1700"
+
+
+def _slot_com(now_jst: datetime) -> str:
+    d = now_jst.date()
+    h = now_jst.hour
+    if h >= JP_CLOSE_HOUR:
+        return f"COM_{d.isoformat()}_1700"
+    if h >= US_MORNING_HOUR:
+        return f"COM_{d.isoformat()}_0700"
+    d = d - timedelta(days=1)
+    return f"COM_{d.isoformat()}_1700"
+
+
+@st.cache_data(show_spinner=False)
+def fetch_data_for_slot(tickers_dict, slot_id, force_nonce=""):
+    _ = slot_id, force_nonce  # cacheキーに含めるため
     data = {}
     for name, ticker in tickers_dict.items():
         try:
@@ -61,7 +90,6 @@ def fetch_data(tickers_dict):
             else:
                 data[name] = {"Price": "N/A", "Change": "N/A", "Change %": "N/A", "Last Updated": "N/A"}
         except Exception:
-            st.warning(f"{name} のデータ取得に失敗しました。")
             data[name] = {"Price": "Error", "Change": "Error", "Change %": "Error", "Last Updated": "Error"}
     return data
 
@@ -146,7 +174,7 @@ def _reuters_ir_feed_urls():
     return list(dict.fromkeys(urls))
 
 
-def fetch_factor_news_24h(symbol_name, max_items=4):
+def fetch_factor_news_24h(symbol_name, max_items=MAX_NEWS_PER_ASSET):
     alias = {
         "S&P 500": ["s&p 500", "sp500", "米国株", "アメリカ株"],
         "NY Dow": ["dow", "ダウ", "米国株", "アメリカ株"],
@@ -159,7 +187,6 @@ def fetch_factor_news_24h(symbol_name, max_items=4):
         "日経平均先物": ["日経平均先物", "cme nikkei", "先物"],
     }
     kws = alias.get(symbol_name, [symbol_name])
-
     collected = []
 
     yahoo_url = "https://news.yahoo.co.jp/rss/topics/business.xml"
@@ -232,7 +259,7 @@ def _gemini_generate(prompt):
     }
 
     last_err = None
-    for i in range(5):  # 最大5回
+    for i in range(5):
         try:
             r = requests.post(url, json=body, timeout=120)
             if r.status_code in (429, 500, 502, 503, 504):
@@ -242,8 +269,7 @@ def _gemini_generate(prompt):
             return j["candidates"][0]["content"]["parts"][0]["text"]
         except Exception as e:
             last_err = e
-            time.sleep(min(2 ** i, 16))  # 1,2,4,8,16秒
-
+            time.sleep(min(2 ** i, 16))
     raise last_err
 
 
@@ -268,7 +294,7 @@ def _build_enriched_news_for_assets(assets):
     news_id_counter = 1
     news_bundle = {}
     for asset in assets:
-        raw_items = fetch_factor_news_24h(asset, max_items=4)
+        raw_items = fetch_factor_news_24h(asset, max_items=MAX_NEWS_PER_ASSET)
         enriched = []
         for it in raw_items:
             full_text = _extract_article_text(it["link"])
@@ -286,16 +312,7 @@ def _build_enriched_news_for_assets(assets):
     return news_bundle
 
 
-def generate_commentary_if_updated(rows):
-    fp_src = json.dumps(
-        sorted([(r["name"], r["price"], r["change_pct"], r["last_updated"]) for r in rows]),
-        ensure_ascii=False,
-    )
-    fp = hashlib.sha256(fp_src.encode("utf-8")).hexdigest()
-
-    if st.session_state.get("market_fp") == fp and st.session_state.get("gemini_commentary"):
-        return st.session_state["gemini_commentary"]
-
+def _run_gemini_analysis(rows):
     movers = [r for r in rows if abs(r["change_pct"]) >= 1.0]
     target_assets = _target_assets_for_fulltext(movers)
     news_bundle = _build_enriched_news_for_assets(target_assets)
@@ -303,6 +320,7 @@ def generate_commentary_if_updated(rows):
 
     prompt = f"""
 あなたは市場ストラテジストです。日本語で、見出し付きの自然な文章で回答してください。
+JSON形式は禁止。必要なら箇条書きを使ってください。
 
 実行時刻(JST): {now_jst}
 市場データ:
@@ -321,35 +339,54 @@ def generate_commentary_if_updated(rows):
 4. 最後に「資金フロー」「短期コンセンサス」「中長期への影響」をまとめる。
 5. 根拠が弱いものは断定せず、可能性として表現する。
 """
+    return _gemini_generate(prompt)
+
+
+def generate_commentary_if_slot_updated(rows, slot_bundle, force=False):
+    key_src = json.dumps(
+        {
+            "rows": sorted([(r["name"], r["price"], r["change_pct"], r["last_updated"]) for r in rows]),
+            "slots": slot_bundle,
+        },
+        ensure_ascii=False,
+    )
+    key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()
+
+    if (not force) and st.session_state.get("gemini_key") == key and st.session_state.get("gemini_text"):
+        return st.session_state["gemini_text"]
 
     try:
-        text = _gemini_generate(prompt)
-        st.session_state["gemini_commentary_last_ok"] = text
+        text = _run_gemini_analysis(rows)
+        st.session_state["gemini_text_last_ok"] = text
     except Exception as e:
-        text = st.session_state.get(
-            "gemini_commentary_last_ok",
-            json.dumps({
-                "error": f"Gemini分析の取得に失敗しました: {e}",
-                "impacted_assets": [],
-                "consensus_now": {},
-                "uncertainty": {}
-            }, ensure_ascii=False, indent=2)
-        )
+        text = st.session_state.get("gemini_text_last_ok", f"Gemini分析の取得に失敗しました: {e}")
 
-    st.session_state["market_fp"] = fp
-    st.session_state["gemini_commentary"] = text
+    st.session_state["gemini_key"] = key
+    st.session_state["gemini_text"] = text
     return text
 
 
-st.write(f"最終アクセス確認時刻: {datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')}")
-st.info("データはアクセス時に取得されます（キャッシュ有効時は高速表示）。")
+# -----------------------------
+# UI
+# -----------------------------
+now_jst = datetime.now(JST)
+st.write(f"最終アクセス確認時刻: {now_jst.strftime('%Y-%m-%d %H:%M:%S')}")
+st.info("更新時刻ルールに応じてデータを取得します。同一スロットでは再取得しません。")
 
-us_data = fetch_data(INDEX_US)
-jp_data = fetch_data(INDEX_JP)
-com_data = fetch_data(COMMODITIES_FUTURES)
+force_refresh = st.button("🔄 データとGeminiを強制更新")
+force_nonce = now_jst.strftime("%Y%m%d%H%M%S") if force_refresh else ""
+
+slot_us = _slot_us(now_jst)
+slot_jp = _slot_jp(now_jst)
+slot_com = _slot_com(now_jst)
+
+us_data = fetch_data_for_slot(INDEX_US, slot_us, force_nonce)
+jp_data = fetch_data_for_slot(INDEX_JP, slot_jp, force_nonce)
+com_data = fetch_data_for_slot(COMMODITIES_FUTURES, slot_com, force_nonce)
 
 rows = build_market_rows(us_data, jp_data, com_data)
-commentary = generate_commentary_if_updated(rows)
+slot_bundle = {"us": slot_us, "jp": slot_jp, "com": slot_com}
+commentary = generate_commentary_if_slot_updated(rows, slot_bundle, force=force_refresh)
 
 st.subheader("🧠 Gemini 市場解説")
 st.markdown(commentary)
