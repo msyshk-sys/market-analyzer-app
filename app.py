@@ -10,6 +10,9 @@ import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 
+from bs4 import BeautifulSoup
+import trafilatura
+
 st.set_page_config(page_title="Market Dashboard", layout="wide")
 st.title("🌍 Global Market Dashboard")
 
@@ -33,6 +36,7 @@ COMMODITIES_FUTURES = {
 }
 
 RAW_JSON_URL = "https://raw.githubusercontent.com/msyshk-sys/market-analyzer-app/main/industry_themes.json"
+MAX_ARTICLE_CHARS = 16000
 
 
 @st.cache_data(ttl=10800)
@@ -141,7 +145,7 @@ def _reuters_ir_feed_urls():
     return list(dict.fromkeys(urls))
 
 
-def fetch_factor_news_24h(symbol_name, max_items=3):
+def fetch_factor_news_24h(symbol_name, max_items=4):
     alias = {
         "S&P 500": ["s&p 500", "sp500", "米国株", "アメリカ株"],
         "NY Dow": ["dow", "ダウ", "米国株", "アメリカ株"],
@@ -157,37 +161,33 @@ def fetch_factor_news_24h(symbol_name, max_items=3):
 
     collected = []
 
-    # 1) Yahoo RSS
     yahoo_url = "https://news.yahoo.co.jp/rss/topics/business.xml"
-    for it in _read_rss_items(yahoo_url, max_items=30):
+    for it in _read_rss_items(yahoo_url, max_items=40):
         if _keyword_hit(it["title"], kws):
             collected.append({**it, "source": "Yahoo RSS"})
         if len(collected) >= max_items:
             return collected
 
-    # 2) Investing RSS (利用可能な代表フィード)
     investing_candidates = [
         "https://www.investing.com/rss/news.rss",
         "https://www.investing.com/rss/market_overview.rss",
     ]
     for feed in investing_candidates:
-        for it in _read_rss_items(feed, max_items=30):
+        for it in _read_rss_items(feed, max_items=40):
             if _keyword_hit(it["title"], kws):
                 collected.append({**it, "source": "Investing RSS"})
             if len(collected) >= max_items:
                 return collected
 
-    # 3) Reuters RSS (IRページ掲載のRSSリンク)
     for feed in _reuters_ir_feed_urls()[:8]:
-        for it in _read_rss_items(feed, max_items=30):
+        for it in _read_rss_items(feed, max_items=40):
             if _keyword_hit(it["title"], kws):
                 collected.append({**it, "source": "Reuters RSS"})
             if len(collected) >= max_items:
                 return collected
 
-    # 4) Google News when:24h
     q = f"{symbol_name} 相場 ニュース"
-    for it in _google_news_24h(q, max_items=10):
+    for it in _google_news_24h(q, max_items=12):
         collected.append({**it, "source": "Google News"})
         if len(collected) >= max_items:
             return collected
@@ -195,14 +195,41 @@ def fetch_factor_news_24h(symbol_name, max_items=3):
     return collected[:max_items]
 
 
+def _extract_article_text(url: str) -> str:
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded:
+            txt = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+            if txt:
+                return txt[:MAX_ARTICLE_CHARS]
+    except Exception:
+        pass
+
+    try:
+        html = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"}).text
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.extract()
+        txt = " ".join(soup.stripped_strings)
+        return txt[:MAX_ARTICLE_CHARS]
+    except Exception:
+        return ""
+
+
+def _target_assets_for_fulltext(movers):
+    if movers:
+        return [m["name"] for m in movers]
+    return ["S&P 500", "NY Dow", "NASDAQ", "日経平均"]
+
+
 def _gemini_generate(prompt):
     api_key = st.secrets["GEMINI_API_KEY"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3},
+        "generationConfig": {"temperature": 0.2},
     }
-    r = requests.post(url, json=body, timeout=60)
+    r = requests.post(url, json=body, timeout=90)
     r.raise_for_status()
     j = r.json()
     return j["candidates"][0]["content"]["parts"][0]["text"]
@@ -225,6 +252,28 @@ def build_market_rows(*datasets):
     return rows
 
 
+def _build_enriched_news_for_assets(assets):
+    news_id_counter = 1
+    news_bundle = {}
+    for asset in assets:
+        raw_items = fetch_factor_news_24h(asset, max_items=4)
+        enriched = []
+        for it in raw_items:
+            full_text = _extract_article_text(it["link"])
+            enriched.append({
+                "news_id": f"N{news_id_counter}",
+                "asset_hint": asset,
+                "title": it["title"],
+                "link": it["link"],
+                "pubDate": it["pubDate"],
+                "source": it.get("source", ""),
+                "full_text": full_text,
+            })
+            news_id_counter += 1
+        news_bundle[asset] = enriched
+    return news_bundle
+
+
 def generate_commentary_if_updated(rows):
     fp_src = json.dumps(
         sorted([(r["name"], r["price"], r["change_pct"], r["last_updated"]) for r in rows]),
@@ -236,37 +285,72 @@ def generate_commentary_if_updated(rows):
         return st.session_state["gemini_commentary"]
 
     movers = [r for r in rows if abs(r["change_pct"]) >= 1.0]
+    target_assets = _target_assets_for_fulltext(movers)
+    news_bundle = _build_enriched_news_for_assets(target_assets)
     now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
 
-    news_bundle = {}
-    for r in movers:
-        news_bundle[r["name"]] = fetch_factor_news_24h(r["name"], max_items=3)
-
     prompt = f"""
-あなたは市場ストラテジストです。以下データをもとに日本語で簡潔に分析してください。
+あなたは市場ストラテジスト。次の market_moves と news_items だけを使って分析してください。
+必ず日本語、必ずJSONで回答。
+根拠のない断定は禁止。ニュースにない事実の創作は禁止。
 
 実行時刻(JST): {now_jst}
-市場データ:
+market_moves:
 {json.dumps(rows, ensure_ascii=False)}
 
-1%以上変動銘柄:
+movers(abs(change)>=1%):
 {json.dumps(movers, ensure_ascii=False)}
 
-ニュース候補(過去24時間):
+news_items(過去24時間):
 {json.dumps(news_bundle, ensure_ascii=False)}
 
-必ず次を出力:
-1. 1%以上変動した指数・商品の列挙（上昇/下落、%）
-2. 各変動の要因ニュース（候補ベース、断定しすぎない）
-3. 現在の資金フロー（どこに資金が向かっているか）
-4. 短期コンセンサス
-5. 中長期コンセンサスへの影響有無
+出力JSONスキーマ:
+{{
+  "impacted_assets": [
+    {{
+      "asset": "string",
+      "move_summary": "string",
+      "key_facts": ["ニュース本文で確認できる事実を最大3件"],
+      "causal_links": [
+        {{
+          "hypothesis": "事実→価格変動の因果仮説",
+          "confidence": "high|medium|low",
+          "evidence_news_ids": ["N1","N2"]
+        }}
+      ]
+    }}
+  ],
+  "consensus_now": {{
+    "short_term_consensus": "string",
+    "medium_long_term_consensus": "string",
+    "changed_by_today": true,
+    "why": "string"
+  }},
+  "uncertainty": {{
+    "data_gaps": ["不足情報"],
+    "low_confidence_points": ["確度の低い論点"]
+  }}
+}}
+
+重要ルール:
+- 「事実」と「推論」を分離すること
+- 推論には必ず evidence_news_ids を付けること
+- 根拠不足は判断保留と明記すること
 """
 
     try:
         text = _gemini_generate(prompt)
     except Exception as e:
-        text = f"Gemini分析の取得に失敗しました: {e}"
+        text = json.dumps(
+            {
+                "error": f"Gemini分析の取得に失敗しました: {e}",
+                "impacted_assets": [],
+                "consensus_now": {},
+                "uncertainty": {},
+            },
+            ensure_ascii=False,
+            indent=2
+        )
 
     st.session_state["market_fp"] = fp
     st.session_state["gemini_commentary"] = text
@@ -284,7 +368,7 @@ rows = build_market_rows(us_data, jp_data, com_data)
 commentary = generate_commentary_if_updated(rows)
 
 st.subheader("🧠 Gemini 市場解説")
-st.markdown(commentary)
+st.code(commentary, language="json")
 st.divider()
 
 st.subheader("🇺🇸 米国市場 (US Equities)")
