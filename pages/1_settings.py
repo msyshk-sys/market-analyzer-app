@@ -31,23 +31,31 @@ def push_to_github(json_data):
         repo.create_file(path=FILE_PATH, message="Initial data", content=content, branch="main")
 
 # --- 2. J-Quantsからの取得・整形関数 ---
+import jquantsapi
+
 def fetch_and_format_jquants():
-    # V2クライアントの初期化（APIキーを使用）
-    cli = jquantsapi.Client(api_key=QUANTS_API_KEY)
-    
-    # 銘柄一覧を取得（V2のエンドポイント /equities/list に対応）
-    df = cli.get_list() 
-    
+    # V2クライアント（APIキー認証）
+    cli = jquantsapi.ClientV2(api_key=QUANTS_API_KEY)
+
+    # 上場銘柄一覧（DataFrame）
+    df = cli.get_listed_info()
+
     theme_list = []
     for (s33_code, s33_name), group in df.groupby(['Sector33Code', 'Sector33CodeName']):
-        if s33_code == '-': continue
-        stocks = [{"code": r['Code'], "name": r['CompanyName']} for _, r in group.iterrows()]
-        theme_list.append({"sector_code": s33_code, "sector_name": s33_name, "stocks": stocks})
-    
+        if s33_code == '-':
+            continue
+        stocks = [{"code": r["Code"], "name": r["CompanyName"]} for _, r in group.iterrows()]
+        theme_list.append({
+            "sector_code": s33_code,
+            "sector_name": s33_name,
+            "stocks": stocks
+        })
+
     return {
         "updated_at": datetime.now().isoformat(),
         "themes": theme_list
     }
+
 
 # --- 3. UI部分 ---
 st.title("⚙️ データ更新設定")
