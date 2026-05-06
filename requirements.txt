@@ -1,6 +1,6 @@
 streamlit
 pandas
 yfinance
-jquants-api-client
 PyGithub
 requests
+jquants-api-client
