@@ -4,3 +4,4 @@ yfinance
 PyGithub
 requests
 jquants-api-client
+jquantsapi
