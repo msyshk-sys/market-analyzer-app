@@ -5,6 +5,8 @@ import requests
 import json
 from datetime import datetime, timedelta, timezone
 
+import jquantsapi
+
 import os
 @st.cache_data(ttl=3600)
 def load_data():
