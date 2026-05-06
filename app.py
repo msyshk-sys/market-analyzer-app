@@ -302,52 +302,24 @@ def generate_commentary_if_updated(rows):
     now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
 
     prompt = f"""
-あなたは市場ストラテジスト。次の market_moves と news_items だけを使って分析してください。
-必ず日本語、必ずJSONで回答。
-根拠のない断定は禁止。ニュースにない事実の創作は禁止。
+あなたは市場ストラテジストです。日本語で、見出し付きの自然な文章で回答してください。
 
 実行時刻(JST): {now_jst}
-market_moves:
+市場データ:
 {json.dumps(rows, ensure_ascii=False)}
 
-movers(abs(change)>=1%):
+1%以上変動した対象:
 {json.dumps(movers, ensure_ascii=False)}
 
-news_items(過去24時間):
+ニュース候補(過去24時間・本文付き):
 {json.dumps(news_bundle, ensure_ascii=False)}
 
-出力JSONスキーマ:
-{{
-  "impacted_assets": [
-    {{
-      "asset": "string",
-      "move_summary": "string",
-      "key_facts": ["ニュース本文で確認できる事実を最大3件"],
-      "causal_links": [
-        {{
-          "hypothesis": "事実→価格変動の因果仮説",
-          "confidence": "high|medium|low",
-          "evidence_news_ids": ["N1","N2"]
-        }}
-      ]
-    }}
-  ],
-  "consensus_now": {{
-    "short_term_consensus": "string",
-    "medium_long_term_consensus": "string",
-    "changed_by_today": true,
-    "why": "string"
-  }},
-  "uncertainty": {{
-    "data_gaps": ["不足情報"],
-    "low_confidence_points": ["確度の低い論点"]
-  }}
-}}
-
-重要ルール:
-- 「事実」と「推論」を分離すること
-- 推論には必ず evidence_news_ids を付けること
-- 根拠不足は判断保留と明記すること
+出力ルール:
+1. 最初に「1%以上変動した指数・商品」を上昇/下落別に列挙する。
+2. その列挙結果に基づいて、各対象ごとに関連ニュースを要約する。
+3. 各対象について「確認できる事実」と「推論」を分けて書く。
+4. 最後に「資金フロー」「短期コンセンサス」「中長期への影響」をまとめる。
+5. 根拠が弱いものは断定せず、可能性として表現する。
 """
 
     try:
@@ -380,7 +352,7 @@ rows = build_market_rows(us_data, jp_data, com_data)
 commentary = generate_commentary_if_updated(rows)
 
 st.subheader("🧠 Gemini 市場解説")
-st.code(commentary, language="json")
+st.markdown(commentary)
 st.divider()
 
 st.subheader("🇺🇸 米国市場 (US Equities)")
