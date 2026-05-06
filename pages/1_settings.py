@@ -32,10 +32,12 @@ def push_to_github(json_data):
 
 # --- 2. J-Quantsからの取得・整形関数 ---
 def fetch_and_format_jquants():
+    # V2クライアントの初期化（APIキーを使用）
     cli = jquantsapi.Client(api_key=QUANTS_API_KEY)
-    df = cli.get_listed_info()
     
-    # 33業種でグルーピング
+    # 銘柄一覧を取得（V2のエンドポイント /equities/list に対応）
+    df = cli.get_list() 
+    
     theme_list = []
     for (s33_code, s33_name), group in df.groupby(['Sector33Code', 'Sector33CodeName']):
         if s33_code == '-': continue
