@@ -7,6 +7,7 @@ import hashlib
 import re
 import email.utils
 import xml.etree.ElementTree as ET
+import time
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 
@@ -229,10 +230,21 @@ def _gemini_generate(prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2},
     }
-    r = requests.post(url, json=body, timeout=90)
-    r.raise_for_status()
-    j = r.json()
-    return j["candidates"][0]["content"]["parts"][0]["text"]
+
+    last_err = None
+    for i in range(5):  # 最大5回
+        try:
+            r = requests.post(url, json=body, timeout=120)
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(f"{r.status_code} retryable", response=r)
+            r.raise_for_status()
+            j = r.json()
+            return j["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            last_err = e
+            time.sleep(min(2 ** i, 16))  # 1,2,4,8,16秒
+
+    raise last_err
 
 
 def build_market_rows(*datasets):
@@ -340,16 +352,16 @@ news_items(過去24時間):
 
     try:
         text = _gemini_generate(prompt)
+        st.session_state["gemini_commentary_last_ok"] = text
     except Exception as e:
-        text = json.dumps(
-            {
+        text = st.session_state.get(
+            "gemini_commentary_last_ok",
+            json.dumps({
                 "error": f"Gemini分析の取得に失敗しました: {e}",
                 "impacted_assets": [],
                 "consensus_now": {},
-                "uncertainty": {},
-            },
-            ensure_ascii=False,
-            indent=2
+                "uncertainty": {}
+            }, ensure_ascii=False, indent=2)
         )
 
     st.session_state["market_fp"] = fp
