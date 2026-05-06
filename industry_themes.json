@@ -1,0 +1,20 @@
+{
+  "updated_at": "2026-05-06T00:00:00",
+  "themes": [
+    {
+      "sector_code": "3650",
+      "sector_name": "電気機器",
+      "stocks": [
+        {"code": "6758", "name": "ソニーグループ"},
+        {"code": "8035", "name": "東京エレクトロン"}
+      ]
+    },
+    {
+      "sector_code": "3300",
+      "sector_name": "医薬品",
+      "stocks": [
+        {"code": "4502", "name": "武田薬品工業"}
+      ]
+    }
+  ]
+}
