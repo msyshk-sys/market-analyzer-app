@@ -3,4 +3,4 @@ pandas
 yfinance
 PyGithub
 requests
-jquants-api-client
+jquants-api-client==2.0.1
