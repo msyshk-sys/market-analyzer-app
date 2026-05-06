@@ -1,8 +1,17 @@
 import streamlit as st
-import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
+import json
 from datetime import datetime, timedelta, timezone
+
+import os
+def load_data():
+    if os.path.exists("industry_themes.json"):
+        with open("industry_themes.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        return {"updated_at": "データ未取得", "themes": []}
 
 st.set_page_config(page_title="Market Dashboard", layout="wide")
 st.title("🌍 Global Market Dashboard")
@@ -117,6 +126,29 @@ for i, (name, metrics) in enumerate(com_data.items()):
                 delta=f"{metrics['Change']} ({metrics['Change %']}%)"
              )
              st.caption(f"Updated: {metrics['Last Updated']}")
+
+# GitHub上のRawファイルURLを指定
+RAW_JSON_URL = "https://raw.githubusercontent.com/msyshk-sys/market-analyzer-app/main/industry_themes.json"
+
+@st.cache_data(ttl=3600) # 1時間ごとにキャッシュ更新
+def load_global_data():
+    try:
+        response = requests.get(RAW_JSON_URL)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error("データの取得に失敗しました。")
+            return None
+    except Exception as e:
+        st.error(f"エラー: {e}")
+        return None
+
+# データのロード
+market_data = load_global_data()
+
+if market_data:
+    st.write(f"最終更新: {market_data.get('updated_at')}")
+    # 以降、このデータを元にダッシュボードを描画
 
 
 st.divider() # 区切り線
