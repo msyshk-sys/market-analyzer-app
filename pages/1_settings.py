@@ -1,39 +1,62 @@
 import streamlit as st
 import jquantsapi
 import json
+from github import Github
 from datetime import datetime
 
-st.set_page_config(page_title="データ更新設定")
-st.title("⚙️ データ更新・設定")
+# --- 設定（Secretsから取得） ---
+QUANTS_API_KEY = st.secrets["JQUANTS_API_KEY"]
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+REPO_NAME = "msyshk-sys/market-analyzer-app"
+FILE_PATH = "industry_themes.json"
 
-# APIキー設定（実際の運用では st.secrets を推奨）
-# APIキーが未設定の場合のガイド
-if "JQUANTS_API_KEY" not in st.secrets:
-    st.error("Secretsに JQUANTS_API_KEY が設定されていません。")
-else:
-    QUANTS_API_KEY = st.secrets["JQUANTS_API_KEY"]
+# --- 1. GitHubへのPush関数 ---
+def push_to_github(json_data):
+    g = Github(GITHUB_TOKEN)
+    repo = g.get_repo(REPO_NAME)
+    content = json.dumps(json_data, ensure_ascii=False, indent=2)
+    
+    try:
+        # 既存ファイルを更新
+        contents = repo.get_contents(FILE_PATH)
+        repo.update_file(
+            path=FILE_PATH,
+            message=f"Update industry data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            content=content,
+            sha=contents.sha,
+            branch="main"
+        )
+    except:
+        # 新規作成
+        repo.create_file(path=FILE_PATH, message="Initial data", content=content, branch="main")
 
-def update_industry_data():
-    # 前述の J-Quants 取得ロジック
-    st.info("J-Quants APIからデータを取得しています...")
-    # cli = jquantsapi.Client(api_key=QUANTS_API_KEY)
-    # ... データ取得・整形処理 ...
-    # 保存先を一時ディレクトリや外部DBにする必要がある点に注意
-    st.success("JSONファイルの更新が完了しました。")
+# --- 2. J-Quantsからの取得・整形関数 ---
+def fetch_and_format_jquants():
+    cli = jquantsapi.Client(api_key=QUANTS_API_KEY)
+    df = cli.get_listed_info()
+    
+    # 33業種でグルーピング
+    theme_list = []
+    for (s33_code, s33_name), group in df.groupby(['Sector33Code', 'Sector33CodeName']):
+        if s33_code == '-': continue
+        stocks = [{"code": r['Code'], "name": r['CompanyName']} for _, r in group.iterrows()]
+        theme_list.append({"sector_code": s33_code, "sector_name": s33_name, "stocks": stocks})
+    
+    return {
+        "updated_at": datetime.now().isoformat(),
+        "themes": theme_list
+    }
 
-st.header("業種・銘柄マスターの更新")
-st.write("J-Quants APIから最新の上場銘柄一覧を取得し、業種別のリストを再構築します。")
+# --- 3. UI部分 ---
+st.title("⚙️ データ更新設定")
 
-if st.button("今すぐマスターデータを更新"):
-    update_industry_data()
-
-st.divider()
-
-st.header("アプリの状態確認")
-# 現在のJSONファイルの更新日時などを表示すると便利です
-try:
-    with open('industry_themes.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-        st.write(f"最終更新日時: {data.get('updated_at', '不明')}")
-except FileNotFoundError:
-    st.warning("マスターデータ（industry_themes.json）が見つかりません。初回更新を行ってください。")
+if st.button("J-Quantsのデータを最新にしてGitHubに保存"):
+    with st.spinner("処理中..."):
+        try:
+            # Step 1: 取得
+            new_data = fetch_and_format_jquants()
+            # Step 2: 保存 (GitHubへ)
+            push_to_github(new_data)
+            st.success("GitHub上のマスターデータを更新しました！")
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
