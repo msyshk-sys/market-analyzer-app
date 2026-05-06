@@ -37,7 +37,7 @@ COMMODITIES_FUTURES = {
 }
 
 RAW_JSON_URL = "https://raw.githubusercontent.com/msyshk-sys/market-analyzer-app/main/industry_themes.json"
-MAX_ARTICLE_CHARS = 16000
+MAX_ARTICLE_CHARS = 4000
 
 
 @st.cache_data(ttl=10800)
