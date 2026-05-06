@@ -1,5 +1,5 @@
 import streamlit as st
-import jquantsapi
+import requests
 import json
 from github import Github
 from datetime import datetime
@@ -26,17 +26,50 @@ def push_to_github(json_data):
         repo.create_file(path=FILE_PATH, message="Initial data", content=content, branch="main")
 
 def fetch_and_format_jquants():
-    cli = jquantsapi.ClientV2(api_key=QUANTS_API_KEY)
-    df = cli.get_listed_info()
+    headers = {"x-api-key": st.secrets["JQUANTS_API_KEY"]}
+    url = "https://api.jquants.com/v2/equities/master"
 
-    theme_list = []
-    for (s33_code, s33_name), group in df.groupby(["Sector33Code", "Sector33CodeName"]):
-        if s33_code == "-":
+    all_rows = []
+    pagination_key = None
+
+    while True:
+        params = {}
+        if pagination_key:
+            params["pagination_key"] = pagination_key
+
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        rows = payload.get("data", [])
+        all_rows.extend(rows)
+
+        pagination_key = payload.get("pagination_key")
+        if not pagination_key:
+            break
+
+    sector_map = {}
+    for r in all_rows:
+        s33 = r.get("S33")
+        s33nm = r.get("S33Nm")
+        code = r.get("Code")
+        name = r.get("CoName")
+
+        if not s33 or s33 == "-":
             continue
-        stocks = [{"code": r["Code"], "name": r["CompanyName"]} for _, r in group.iterrows()]
-        theme_list.append({"sector_code": s33_code, "sector_name": s33_name, "stocks": stocks})
 
-    return {"updated_at": datetime.now().isoformat(), "themes": theme_list}
+        key = (s33, s33nm)
+        sector_map.setdefault(key, []).append({"code": code, "name": name})
+
+    theme_list = [
+        {"sector_code": s33, "sector_name": s33nm, "stocks": stocks}
+        for (s33, s33nm), stocks in sector_map.items()
+    ]
+
+    return {
+        "updated_at": datetime.now().isoformat(),
+        "themes": theme_list
+    }
 
 st.title("⚙️ データ更新設定")
 
