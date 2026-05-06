@@ -6,12 +6,25 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import os
+@st.cache_data(ttl=3600)
 def load_data():
+    RAW_URL = "https://raw.githubusercontent.com/ユーザー名/リポジトリ名/main/industry_themes.json"
+    
+    # 1. まずはGitHubから最新版を取りに行く
+    try:
+        response = requests.get(RAW_URL)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass # 失敗した場合は下へ
+    
+    # 2. GitHubがダメなら、ローカルのファイルをチェック
     if os.path.exists("industry_themes.json"):
         with open("industry_themes.json", "r", encoding="utf-8") as f:
             return json.load(f)
-    else:
-        return {"updated_at": "データ未取得", "themes": []}
+            
+    # 3. どちらもダメなら空のデータを返す
+    return {"updated_at": "データ未取得", "themes": []}
 
 st.set_page_config(page_title="Market Dashboard", layout="wide")
 st.title("🌍 Global Market Dashboard")
